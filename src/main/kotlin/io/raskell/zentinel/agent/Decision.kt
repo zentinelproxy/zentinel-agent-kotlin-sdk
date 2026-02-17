@@ -1,4 +1,4 @@
-package io.raskell.sentinel.agent
+package io.raskell.zentinel.agent
 
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive

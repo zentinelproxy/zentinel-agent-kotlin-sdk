@@ -1,9 +1,9 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
-import io.raskell.sentinel.agent.Agent
-import io.raskell.sentinel.agent.Decision
-import io.raskell.sentinel.agent.Request
-import io.raskell.sentinel.agent.Response
+import io.raskell.zentinel.agent.Agent
+import io.raskell.zentinel.agent.Decision
+import io.raskell.zentinel.agent.Request
+import io.raskell.zentinel.agent.Response
 import kotlinx.serialization.json.JsonObject
 
 /**

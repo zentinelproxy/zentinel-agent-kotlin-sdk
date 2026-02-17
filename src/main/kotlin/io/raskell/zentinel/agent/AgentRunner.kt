@@ -1,4 +1,4 @@
-package io.raskell.sentinel.agent
+package io.raskell.zentinel.agent
 
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 private val logger = KotlinLogging.logger {}
 
 /**
- * Runner for Sentinel agents.
+ * Runner for Zentinel agents.
  *
  * Handles Unix socket server, protocol encoding/decoding, and agent lifecycle.
  *
@@ -32,7 +32,7 @@ private val logger = KotlinLogging.logger {}
  * ```
  */
 class AgentRunner(private val agent: Agent) {
-    private var socketPath: String = "/tmp/sentinel-agent.sock"
+    private var socketPath: String = "/tmp/zentinel-agent.sock"
     private var logLevel: String = "INFO"
     private var jsonLogs: Boolean = false
     private var agentName: String? = null
@@ -310,7 +310,7 @@ class AgentRunner(private val agent: Agent) {
  * Run an agent with CLI argument parsing.
  *
  * Supported arguments:
- * - `--socket=PATH` or `--socket PATH`: Unix socket path (default: /tmp/sentinel-agent.sock)
+ * - `--socket=PATH` or `--socket PATH`: Unix socket path (default: /tmp/zentinel-agent.sock)
  * - `--log-level=LEVEL` or `--log-level LEVEL`: Log level (default: INFO)
  * - `--json-logs`: Enable JSON log output
  * - `--name=NAME` or `--name NAME`: Override agent name for logging
@@ -325,7 +325,7 @@ class AgentRunner(private val agent: Agent) {
 fun runAgent(agent: Agent, args: Array<String> = emptyArray()) {
     val socketPath = args.find { it.startsWith("--socket=") }?.substringAfter("=")
         ?: args.getOrNull(args.indexOf("--socket") + 1)?.takeIf { !it.startsWith("--") }
-        ?: "/tmp/sentinel-agent.sock"
+        ?: "/tmp/zentinel-agent.sock"
 
     val logLevel = args.find { it.startsWith("--log-level=") }?.substringAfter("=")
         ?: args.getOrNull(args.indexOf("--log-level") + 1)?.takeIf { !it.startsWith("--") }

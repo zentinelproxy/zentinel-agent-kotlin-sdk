@@ -1,7 +1,7 @@
-package io.raskell.sentinel.agent.examples
+package io.raskell.zentinel.agent.examples
 
-import io.raskell.sentinel.agent.*
-import io.raskell.sentinel.agent.v2.*
+import io.raskell.zentinel.agent.*
+import io.raskell.zentinel.agent.v2.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.atomic.AtomicInteger

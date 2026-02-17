@@ -1,4 +1,4 @@
-package io.raskell.sentinel.agent
+package io.raskell.zentinel.agent
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals

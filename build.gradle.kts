@@ -5,7 +5,7 @@ plugins {
     `maven-publish`
 }
 
-group = "io.raskell.sentinel"
+group = "io.raskell.zentinel"
 version = "0.2.0"
 
 repositories {
@@ -47,9 +47,9 @@ publishing {
             from(components["java"])
 
             pom {
-                name.set("Sentinel Agent Kotlin SDK")
-                description.set("SDK for building Sentinel proxy agents in Kotlin")
-                url.set("https://github.com/raskell-io/sentinel-agent-kotlin-sdk")
+                name.set("Zentinel Agent Kotlin SDK")
+                description.set("SDK for building Zentinel proxy agents in Kotlin")
+                url.set("https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk")
 
                 licenses {
                     license {
@@ -59,8 +59,8 @@ publishing {
                 }
 
                 scm {
-                    url.set("https://github.com/raskell-io/sentinel-agent-kotlin-sdk")
-                    connection.set("scm:git:git://github.com/raskell-io/sentinel-agent-kotlin-sdk.git")
+                    url.set("https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk")
+                    connection.set("scm:git:git://github.com/zentinelproxy/zentinel-agent-kotlin-sdk.git")
                 }
             }
         }

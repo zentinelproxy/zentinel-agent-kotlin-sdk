@@ -1,10 +1,10 @@
-# Sentinel Configuration
+# Zentinel Configuration
 
-How to configure Sentinel to use your Kotlin agents.
+How to configure Zentinel to use your Kotlin agents.
 
 ## Agent Definition
 
-Define your agent in the `agents` block of your Sentinel configuration:
+Define your agent in the `agents` block of your Zentinel configuration:
 
 ```kdl
 agents {

@@ -1,4 +1,4 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonPrimitive
@@ -110,7 +110,7 @@ class ProtocolV2Test {
     fun `HandshakeRequest serialization`() {
         val request = HandshakeRequest(
             protocolVersion = 2,
-            clientName = "sentinel-proxy",
+            clientName = "zentinel-proxy",
             supportedFeatures = listOf("streaming", "cancellation"),
             supportedEncodings = listOf("json", "msgpack")
         )
@@ -118,7 +118,7 @@ class ProtocolV2Test {
         val json = protocolV2Json.encodeToString(request)
 
         assertTrue(json.contains("\"protocol_version\":2"))
-        assertTrue(json.contains("\"client_name\":\"sentinel-proxy\""))
+        assertTrue(json.contains("\"client_name\":\"zentinel-proxy\""))
         assertTrue(json.contains("\"supported_features\""))
     }
 

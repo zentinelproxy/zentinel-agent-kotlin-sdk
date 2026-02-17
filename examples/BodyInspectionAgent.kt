@@ -1,6 +1,6 @@
-package io.raskell.sentinel.agent.examples
+package io.raskell.zentinel.agent.examples
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 

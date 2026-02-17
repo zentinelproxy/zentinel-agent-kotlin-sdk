@@ -1,11 +1,11 @@
-package io.raskell.sentinel.agent
+package io.raskell.zentinel.agent
 
 import kotlinx.serialization.json.JsonObject
 
 /**
- * Base interface for Sentinel agents.
+ * Base interface for Zentinel agents.
  *
- * Implement this interface to create a Sentinel agent. The SDK handles
+ * Implement this interface to create a Zentinel agent. The SDK handles
  * protocol details, connection management, and error handling.
  *
  * Example:

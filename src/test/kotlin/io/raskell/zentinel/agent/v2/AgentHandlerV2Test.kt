@@ -1,6 +1,6 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
 import java.util.Base64
@@ -70,7 +70,7 @@ class AgentHandlerV2Test {
         val handler = AgentHandlerV2(agent)
         val request = HandshakeRequest(
             protocolVersion = 2,
-            clientName = "sentinel-proxy",
+            clientName = "zentinel-proxy",
             supportedFeatures = listOf("streaming")
         )
 
@@ -311,7 +311,7 @@ class AgentHandlerV2Test {
 
             override suspend fun onResponse(request: Request, response: Response): Decision {
                 return Decision.allow()
-                    .addResponseHeader("X-Served-By", "sentinel")
+                    .addResponseHeader("X-Served-By", "zentinel")
                     .removeResponseHeader("Server")
             }
         }

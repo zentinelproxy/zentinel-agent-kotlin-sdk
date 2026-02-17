@@ -2,10 +2,10 @@
 
 ## Agent
 
-The interface for all Sentinel agents.
+The interface for all Zentinel agents.
 
 ```kotlin
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 ```
 
 ### Required Properties
@@ -46,7 +46,7 @@ Called when request headers are received. This is the main entry point for reque
 suspend fun onRequestBody(request: Request): Decision
 ```
 
-Called when the request body is available (requires body inspection to be enabled in Sentinel).
+Called when the request body is available (requires body inspection to be enabled in Zentinel).
 
 **Default**: Returns `Decision.allow()`
 
@@ -135,7 +135,7 @@ Returns the current configuration instance.
 Fluent builder for agent decisions.
 
 ```kotlin
-import io.raskell.sentinel.agent.Decision
+import io.raskell.zentinel.agent.Decision
 ```
 
 ### Factory Functions
@@ -352,7 +352,7 @@ Decision.allow().withResponseBodyMutation(BodyMutation.replace(0, "modified body
 Represents an incoming HTTP request.
 
 ```kotlin
-import io.raskell.sentinel.agent.Request
+import io.raskell.zentinel.agent.Request
 ```
 
 ### Methods
@@ -558,7 +558,7 @@ request.isMultipart() // Content-Type is multipart
 Represents an HTTP response from the upstream.
 
 ```kotlin
-import io.raskell.sentinel.agent.Response
+import io.raskell.zentinel.agent.Response
 ```
 
 ### Methods
@@ -629,7 +629,7 @@ response.bodyJson(deserializer: DeserializationStrategy<T>)
 Runner for starting and managing an agent.
 
 ```kotlin
-import io.raskell.sentinel.agent.AgentRunner
+import io.raskell.zentinel.agent.AgentRunner
 ```
 
 ### Usage
@@ -694,7 +694,7 @@ The agent runner automatically handles SIGINT and SIGTERM signals for graceful s
 Convenience function to run an agent with CLI argument parsing.
 
 ```kotlin
-import io.raskell.sentinel.agent.runAgent
+import io.raskell.zentinel.agent.runAgent
 
 fun main(args: Array<String>) {
     runAgent(MyAgent(), args)
@@ -710,7 +710,7 @@ This parses `--socket`, `--log-level`, and `--json-logs` from command line argum
 Helper class for body mutations.
 
 ```kotlin
-import io.raskell.sentinel.agent.BodyMutation
+import io.raskell.zentinel.agent.BodyMutation
 ```
 
 ### Factory Methods

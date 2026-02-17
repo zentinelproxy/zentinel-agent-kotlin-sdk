@@ -1,12 +1,12 @@
-# Getting Started with Sentinel Agent Kotlin SDK
+# Getting Started with Zentinel Agent Kotlin SDK
 
-This guide will walk you through creating your first Sentinel agent in Kotlin.
+This guide will walk you through creating your first Zentinel agent in Kotlin.
 
 ## Prerequisites
 
 - Java 21 or later
 - Gradle 8.5 or later
-- A running Sentinel proxy instance (or just the SDK for development)
+- A running Zentinel proxy instance (or just the SDK for development)
 
 ## Installation
 
@@ -14,7 +14,7 @@ Add the dependency to your `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("io.raskell.sentinel:sentinel-agent-sdk:0.1.0")
+    implementation("io.raskell.zentinel:zentinel-agent-sdk:0.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 }
@@ -25,7 +25,7 @@ dependencies {
 Create a new file `Main.kt`:
 
 ```kotlin
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.coroutines.runBlocking
 
 class MyAgent : Agent {
@@ -53,7 +53,7 @@ fun main(args: Array<String>) {
 ./gradlew run --args="--socket /tmp/my-agent.sock"
 ```
 
-Your agent is now listening on `/tmp/my-agent.sock` and ready to receive events from Sentinel.
+Your agent is now listening on `/tmp/my-agent.sock` and ready to receive events from Zentinel.
 
 ## Understanding the Agent Interface
 
@@ -187,9 +187,9 @@ class MyAgent : ConfigurableAgent<MyConfig> {
 }
 ```
 
-## Connecting to Sentinel
+## Connecting to Zentinel
 
-Configure Sentinel to use your agent:
+Configure Zentinel to use your agent:
 
 ```kdl
 agents {
@@ -233,7 +233,7 @@ The SDK provides built-in CLI argument parsing:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--socket PATH` | Unix socket path | `/tmp/sentinel-agent.sock` |
+| `--socket PATH` | Unix socket path | `/tmp/zentinel-agent.sock` |
 | `--log-level LEVEL` | DEBUG, INFO, WARN, ERROR | `INFO` |
 | `--json-logs` | Output logs as JSON | disabled |
 
@@ -301,9 +301,9 @@ class MyAgentTest {
 
 - Read the [API Reference](api.md) for complete documentation
 - Browse [Examples](examples.md) for common patterns
-- See the [Configuration](configuration.md) guide for Sentinel setup
+- See the [Configuration](configuration.md) guide for Zentinel setup
 
 ## Need Help?
 
-- [GitHub Issues](https://github.com/raskell-io/sentinel-agent-kotlin-sdk/issues)
-- [Sentinel Documentation](https://sentinel.raskell.io/docs)
+- [GitHub Issues](https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk/issues)
+- [Zentinel Documentation](https://zentinelproxy.io/docs)

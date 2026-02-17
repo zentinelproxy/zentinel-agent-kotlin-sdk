@@ -1,6 +1,6 @@
 # Examples
 
-Common patterns and use cases for Sentinel agents.
+Common patterns and use cases for Zentinel agents.
 
 ## Basic Request Blocking
 
@@ -9,7 +9,7 @@ Block requests based on path patterns:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class BlockingAgent : Agent {
     override val name = "blocking-agent"
@@ -40,7 +40,7 @@ Block or allow requests based on client IP:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.serialization.json.JsonPrimitive
 
 class IPFilterAgent : Agent {
@@ -77,7 +77,7 @@ Validate JWT tokens:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import io.jsonwebtoken.Jwts
 import io.jsonwebtoken.security.Keys
 
@@ -134,7 +134,7 @@ Simple in-memory rate limiting:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
@@ -184,7 +184,7 @@ Add, remove, or modify headers:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class HeaderAgent : Agent {
     override val name = "header-agent"
@@ -192,7 +192,7 @@ class HeaderAgent : Agent {
     override suspend fun onRequest(request: Request): Decision {
         return Decision.allow()
             // Add headers for upstream
-            .addRequestHeader("X-Forwarded-By", "sentinel")
+            .addRequestHeader("X-Forwarded-By", "zentinel")
             .addRequestHeader("X-Request-ID", request.correlationId())
             // Remove sensitive headers
             .removeRequestHeader("X-Internal-Token")
@@ -222,7 +222,7 @@ Agent with runtime configuration:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -278,7 +278,7 @@ Log all requests with timing:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.serialization.json.JsonPrimitive
 
 class LoggingAgent : Agent {
@@ -308,7 +308,7 @@ Validate request content types:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class ContentTypeAgent : Agent {
     override val name = "content-type-validator"
@@ -357,7 +357,7 @@ Redirect requests to different URLs:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class RedirectAgent : Agent {
     override val name = "redirect-agent"
@@ -397,7 +397,7 @@ Issue challenges to suspicious requests:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class BotProtectionAgent(private val captchaSiteKey: String) : Agent {
     override val name = "bot-protection"
@@ -455,7 +455,7 @@ Protect login endpoints with CAPTCHA challenges:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -518,7 +518,7 @@ Agent that performs multiple validations:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class SecurityAgent : Agent {
     override val name = "security-agent"
@@ -568,7 +568,7 @@ Inspect request bodies for malicious content:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.serialization.json.JsonPrimitive
 
 class BodyInspectionAgent : Agent {
@@ -627,7 +627,7 @@ Transform responses from upstream:
 ```kotlin
 package com.example
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 
 class ResponseTransformAgent : Agent {
     override val name = "response-transform"

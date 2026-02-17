@@ -1,6 +1,6 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonElement

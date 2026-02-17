@@ -1,1 +1,1 @@
-rootProject.name = "sentinel-agent-kotlin-sdk"
+rootProject.name = "zentinel-agent-kotlin-sdk"

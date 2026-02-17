@@ -1,4 +1,4 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
 import kotlinx.serialization.*
 import kotlinx.serialization.json.*

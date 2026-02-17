@@ -1,6 +1,6 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
-import io.raskell.sentinel.agent.*
+import io.raskell.zentinel.agent.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject

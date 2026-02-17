@@ -1,4 +1,4 @@
-package io.raskell.sentinel.agent.v2
+package io.raskell.zentinel.agent.v2
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -41,7 +41,7 @@ data class AgentRunnerV2Config(
     val transport: TransportType = TransportType.UDS,
 
     /** Socket path for UDS transport. */
-    val socketPath: String = "/tmp/sentinel-agent.sock",
+    val socketPath: String = "/tmp/zentinel-agent.sock",
 
     /** Host for gRPC/TCP transport. */
     val host: String = "127.0.0.1",
@@ -69,7 +69,7 @@ data class AgentRunnerV2Config(
 ) {
     companion object {
         /** Create a UDS configuration. */
-        fun uds(socketPath: String = "/tmp/sentinel-agent.sock") = AgentRunnerV2Config(
+        fun uds(socketPath: String = "/tmp/zentinel-agent.sock") = AgentRunnerV2Config(
             transport = TransportType.UDS,
             socketPath = socketPath
         )
@@ -522,7 +522,7 @@ fun runAgentV2(agent: AgentV2, args: Array<String> = emptyArray()) {
         else -> {
             val socketPath = args.find { it.startsWith("--socket=") }?.substringAfter("=")
                 ?: args.getOrNull(args.indexOf("--socket") + 1)?.takeIf { !it.startsWith("--") }
-                ?: "/tmp/sentinel-agent.sock"
+                ?: "/tmp/zentinel-agent.sock"
 
             AgentRunnerV2Config.uds(socketPath)
         }
