@@ -11,6 +11,7 @@ const val PROTOCOL_VERSION: Int = 1
 /**
  * Maximum message size (10MB).
  */
+@Deprecated("Use v2 limits: MAX_MESSAGE_SIZE_UDS (16 MB) or MAX_MESSAGE_SIZE_GRPC (10 MB)")
 const val MAX_MESSAGE_SIZE: Int = 10 * 1024 * 1024
 
 /**
