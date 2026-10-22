@@ -29,8 +29,13 @@ plugins {
     application
 }
 
+repositories {
+    mavenLocal() // the SDK, after `./gradlew publishToMavenLocal` in its repository
+    mavenCentral()
+}
+
 dependencies {
-    implementation("io.raskell.zentinel:zentinel-agent-sdk:0.1.0")
+    implementation("io.raskell.zentinel:zentinel-agent-kotlin-sdk:0.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
 }
 

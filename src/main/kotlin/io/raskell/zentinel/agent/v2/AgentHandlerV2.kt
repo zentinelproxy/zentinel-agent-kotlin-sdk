@@ -3,429 +3,283 @@ package io.raskell.zentinel.agent.v2
 import io.raskell.zentinel.agent.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.*
 import mu.KotlinLogging
+import java.io.ByteArrayOutputStream
 import java.util.Base64
-import java.util.concurrent.ConcurrentHashMap
 
 private val logger = KotlinLogging.logger {}
 
 /**
- * Handler that bridges an AgentV2 implementation to the v2 protocol.
+ * Routes protocol v2 events to an agent's methods.
  *
- * Manages request state, multiplexing, and protocol translation.
+ * The handler is transport neutral: events arrive as JSON objects in the shape
+ * the proxy sends on the Unix socket (the serde form of the Rust protocol
+ * types), and every handler returns an [AgentResponse]. The UDS server passes
+ * them through; the gRPC server converts protobuf messages to and from them.
  *
- * Example:
- * ```kotlin
- * val agent = MyAgentV2()
- * val handler = AgentHandlerV2(agent)
+ * One handler serves every connection of a runner: the proxy keeps a pool of
+ * connections per agent and may send a request's headers on one and its body
+ * on another, so per-request state is keyed by correlation id, not connection.
  *
- * // Handle incoming messages
- * val response = handler.handleRequestHeaders(requestHeaders)
- * ```
+ * @param agent The agent. An [AgentV2] reports its own capabilities and gets
+ *   the lifecycle callbacks; a plain [Agent] gets defaults from its name.
  */
-class AgentHandlerV2(private val agent: AgentV2) {
+class AgentHandlerV2(private val agent: Agent) {
 
-    /**
-     * In-flight requests indexed by request ID.
-     */
-    private val requests = ConcurrentHashMap<Long, RequestState>()
+    private class RequestState(val request: Request) {
+        val requestBody = ByteArrayOutputStream()
+        val responseBody = ByteArrayOutputStream()
+        var responseStatus: Int = 200
+        var responseHeaders: Map<String, List<String>> = emptyMap()
+    }
 
-    /**
-     * Mutex for coordinating shutdown operations.
-     */
+    /** In-flight requests, bounded: `request_complete` reaches only agents that subscribe to it. */
+    private val requests = object : LinkedHashMap<String, RequestState>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RequestState>?): Boolean =
+            size > MAX_TRACKED_REQUESTS
+    }
+
     private val shutdownMutex = Mutex()
 
-    /**
-     * Whether the handler is draining (not accepting new requests).
-     */
     @Volatile
     private var draining = false
 
-    /**
-     * State for an in-flight request.
-     */
-    private data class RequestState(
-        val request: Request,
-        val requestV2: RequestV2,
-        var bodyChunks: MutableList<ByteArray> = mutableListOf(),
-        var responseHeaders: Response? = null
-    )
+    private val agentV2: AgentV2? get() = agent as? AgentV2
 
-    /**
-     * Get the agent's capabilities.
-     */
-    fun capabilities(): AgentCapabilities = agent.capabilities()
+    /** The agent's name. */
+    val agentName: String get() = agent.name
 
-    /**
-     * Get the agent's current health status.
-     */
-    fun healthStatus(): HealthStatus = agent.healthStatus()
+    /** The agent's capabilities. */
+    fun capabilities(): AgentCapabilities = agentV2?.capabilities() ?: AgentCapabilities()
 
-    /**
-     * Get the agent's current metrics.
-     */
-    fun metrics(): MetricsReport = agent.metrics()
+    /** The agent's current health status. */
+    fun healthStatus(): HealthStatus = agentV2?.healthStatus() ?: HealthStatus.Healthy
 
-    /**
-     * Handle a handshake request.
-     */
+    /** The agent's current metrics. */
+    fun metrics(): MetricsReport = agentV2?.metrics() ?: MetricsReport()
+
+    /** Answer the UDS handshake. */
     fun handleHandshake(request: HandshakeRequest): HandshakeResponse {
-        logger.debug { "Handshake from ${request.clientName}, version ${request.protocolVersion}" }
-
-        if (request.protocolVersion != PROTOCOL_V2_VERSION) {
-            logger.warn { "Version mismatch: client=${request.protocolVersion}, server=$PROTOCOL_V2_VERSION" }
+        val caps = capabilities().toUds(agent.name)
+        if (PROTOCOL_V2_VERSION !in request.supportedVersions) {
+            return HandshakeResponse(
+                capabilities = caps,
+                success = false,
+                error = "protocol v2 not offered (proxy supports ${request.supportedVersions})"
+            )
         }
-
-        return HandshakeResponse(
-            protocolVersion = PROTOCOL_V2_VERSION,
-            agentName = agent.name,
-            capabilities = agent.capabilities(),
-            encoding = "json"
-        )
+        logger.debug { "Handshake with ${request.proxyId} ${request.proxyVersion}" }
+        return HandshakeResponse(capabilities = caps, success = true)
     }
 
     /**
-     * Handle request headers message.
+     * Apply a configuration. The proxy sends one on every new connection,
+     * after the handshake.
+     *
+     * @return true if the agent accepted it (`onConfigure` did not throw)
      */
-    suspend fun handleRequestHeaders(msg: RequestHeadersV2): DecisionMessageV2 {
+    suspend fun configure(config: JsonElement?, version: String? = null): Boolean = try {
+        agent.onConfigure(config as? JsonObject ?: JsonObject(emptyMap()))
+        logger.info { "Configuration applied" + (version?.let { " (version $it)" } ?: "") }
+        true
+    } catch (e: Exception) {
+        logger.error(e) { "Configuration rejected" }
+        false
+    }
+
+    /**
+     * Handle one event and return the response.
+     *
+     * @param type The event type
+     * @param payload The event in the proxy's JSON shape
+     */
+    suspend fun dispatch(type: EventType, payload: JsonObject): AgentResponse = try {
+        when (type) {
+            EventType.CONFIGURE -> {
+                val event = protocolJson.decodeFromJsonElement<ConfigureEvent>(payload)
+                if (configure(event.config, event.configVersion)) {
+                    AgentResponse.defaultAllow()
+                } else {
+                    AgentResponse.block(500, "Configuration rejected")
+                }
+            }
+            EventType.REQUEST_HEADERS -> onRequestHeaders(protocolJson.decodeFromJsonElement(payload))
+            EventType.REQUEST_BODY_CHUNK -> onRequestBodyChunk(protocolJson.decodeFromJsonElement(payload))
+            EventType.RESPONSE_HEADERS -> onResponseHeaders(protocolJson.decodeFromJsonElement(payload))
+            EventType.RESPONSE_BODY_CHUNK -> onResponseBodyChunk(protocolJson.decodeFromJsonElement(payload))
+            EventType.REQUEST_COMPLETE -> onRequestComplete(protocolJson.decodeFromJsonElement(payload))
+            EventType.GUARDRAIL_INSPECT -> onGuardrailInspect(protocolJson.decodeFromJsonElement(payload))
+            EventType.WEBSOCKET_FRAME -> AgentResponse.defaultAllow()
+        }
+    } catch (e: Exception) {
+        logger.error(e) { "Error handling $type" }
+        when (type) {
+            EventType.REQUEST_HEADERS, EventType.REQUEST_BODY_CHUNK -> AgentResponse.block(500, "Agent error")
+            else -> AgentResponse.defaultAllow()
+        }
+    }
+
+    private fun remember(correlationId: String, state: RequestState) =
+        synchronized(requests) { requests[correlationId] = state }
+
+    private fun state(correlationId: String): RequestState = synchronized(requests) {
+        requests.getOrPut(correlationId) {
+            // The agent did not see this request's headers (it is not
+            // subscribed to them): give it what is known.
+            RequestState(Request.fromEvent(placeholderHeaders(correlationId)))
+        }
+    }
+
+    private fun forget(correlationId: String): RequestState? =
+        synchronized(requests) { requests.remove(correlationId) }
+
+    private suspend fun onRequestHeaders(event: RequestHeadersEvent): AgentResponse {
         if (draining) {
-            logger.debug { "Rejecting request ${msg.requestId} during drain" }
-            return DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Block(
-                    status = 503,
-                    body = "Agent is draining"
-                )
-            )
+            return AgentResponse.block(503, "Agent is draining")
         }
-
-        val event = RequestHeadersEvent(
-            metadata = RequestMetadata(
-                correlationId = msg.metadata.correlationId,
-                requestId = msg.metadata.correlationId,
-                clientIp = msg.metadata.clientIp,
-                clientPort = msg.metadata.clientPort,
-                serverName = msg.metadata.serverName,
-                protocol = msg.metadata.protocol,
-                tlsVersion = msg.metadata.tlsVersion,
-                routeId = msg.metadata.routeId,
-                timestamp = msg.metadata.timestamp
-            ),
-            method = msg.method,
-            uri = msg.uri,
-            headers = msg.headers
-        )
-
         val request = Request.fromEvent(event)
-        val requestV2 = RequestV2(request, msg.requestId)
-
-        // Store request state for potential body handling
-        requests[msg.requestId] = RequestState(request, requestV2)
-
-        return try {
-            val decision = agent.onRequest(request)
-            val response = decision.build()
-            toDecisionMessageV2(msg.requestId, response)
-        } catch (e: Exception) {
-            logger.error(e) { "Error handling request headers for ${msg.requestId}" }
-            DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Block(
-                    status = 500,
-                    body = "Agent error: ${e.message}"
-                )
-            )
-        }
+        remember(event.metadata.correlationId, RequestState(request))
+        return agent.onRequest(request).build()
     }
 
-    /**
-     * Handle request body chunk message.
-     */
-    suspend fun handleRequestBodyChunk(msg: RequestBodyChunkV2): DecisionMessageV2 {
-        val state = requests[msg.requestId]
-        if (state == null) {
-            logger.warn { "Body chunk for unknown request ${msg.requestId}" }
-            return DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
-        }
-
-        // Decode and accumulate body chunk
-        val chunkBytes = Base64.getDecoder().decode(msg.data)
-        state.bodyChunks.add(chunkBytes)
-
-        if (!msg.isLast) {
-            // More chunks expected, allow to continue
-            return DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
-        }
-
-        // Combine all body chunks
-        val totalSize = state.bodyChunks.sumOf { it.size }
-        val fullBody = ByteArray(totalSize)
-        var offset = 0
-        for (chunk in state.bodyChunks) {
-            System.arraycopy(chunk, 0, fullBody, offset, chunk.size)
-            offset += chunk.size
-        }
-
-        val requestWithBody = state.request.withBody(fullBody)
-
-        return try {
-            val decision = agent.onRequestBody(requestWithBody)
-            val response = decision.build()
-            toDecisionMessageV2(msg.requestId, response)
-        } catch (e: Exception) {
-            logger.error(e) { "Error handling request body for ${msg.requestId}" }
-            DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Block(
-                    status = 500,
-                    body = "Agent error: ${e.message}"
-                )
-            )
-        }
+    private suspend fun onRequestBodyChunk(event: RequestBodyChunkEvent): AgentResponse {
+        val state = state(event.correlationId)
+        val body = synchronized(state) {
+            state.requestBody.write(Base64.getDecoder().decode(event.data))
+            if (event.isLast) state.requestBody.toByteArray() else null
+        } ?: return Decision.allow().needsMoreData().build()
+        return agent.onRequestBody(state.request.withBody(body)).build()
     }
 
-    /**
-     * Handle response headers message.
-     */
-    suspend fun handleResponseHeaders(msg: ResponseHeadersV2): DecisionMessageV2 {
-        val state = requests[msg.requestId]
-        if (state == null) {
-            logger.warn { "Response headers for unknown request ${msg.requestId}" }
-            return DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
+    private suspend fun onResponseHeaders(event: ResponseHeadersEvent): AgentResponse {
+        val state = state(event.correlationId)
+        synchronized(state) {
+            state.responseStatus = event.status
+            state.responseHeaders = event.headers
+            state.responseBody.reset()
         }
-
-        val event = ResponseHeadersEvent(
-            correlationId = state.request.correlationId,
-            status = msg.statusCode,
-            headers = msg.headers
-        )
-
-        val response = Response.fromEvent(event)
-        state.responseHeaders = response
-
-        return try {
-            val decision = agent.onResponse(state.request, response)
-            val agentResponse = decision.build()
-            toDecisionMessageV2(msg.requestId, agentResponse)
-        } catch (e: Exception) {
-            logger.error(e) { "Error handling response headers for ${msg.requestId}" }
-            DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
-        }
+        return agent.onResponse(state.request, Response.fromEvent(event)).build()
     }
 
-    /**
-     * Handle response body chunk message.
-     */
-    suspend fun handleResponseBodyChunk(msg: ResponseBodyChunkV2): DecisionMessageV2 {
-        val state = requests[msg.requestId]
-        if (state == null) {
-            logger.warn { "Response body chunk for unknown request ${msg.requestId}" }
-            return DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
-        }
-
-        val responseHeaders = state.responseHeaders
-        if (responseHeaders == null) {
-            logger.warn { "Response body chunk before response headers for ${msg.requestId}" }
-            return DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
-        }
-
-        val chunkBytes = Base64.getDecoder().decode(msg.data)
-        val responseWithBody = responseHeaders.withBody(chunkBytes)
-
-        return try {
-            val decision = agent.onResponseBody(state.request, responseWithBody)
-            val agentResponse = decision.build()
-            toDecisionMessageV2(msg.requestId, agentResponse)
-        } catch (e: Exception) {
-            logger.error(e) { "Error handling response body for ${msg.requestId}" }
-            DecisionMessageV2(
-                requestId = msg.requestId,
-                decision = DecisionV2.Allow
-            )
-        }
+    private suspend fun onResponseBodyChunk(event: ResponseBodyChunkEvent): AgentResponse {
+        val state = state(event.correlationId)
+        val body = synchronized(state) {
+            state.responseBody.write(Base64.getDecoder().decode(event.data))
+            if (event.isLast) state.responseBody.toByteArray() else null
+        } ?: return Decision.allow().needsMoreData().build()
+        val response = Response.fromEvent(
+            ResponseHeadersEvent(event.correlationId, state.responseStatus, state.responseHeaders)
+        ).withBody(body)
+        return agent.onResponseBody(state.request, response).build()
     }
 
-    /**
-     * Handle request cancellation.
-     */
-    suspend fun handleCancelRequest(msg: CancelRequestMessage) {
-        val state = requests.remove(msg.requestId)
+    private suspend fun onRequestComplete(event: RequestCompleteEvent): AgentResponse {
+        val state = forget(event.correlationId)
         if (state != null) {
-            logger.debug { "Request ${msg.requestId} cancelled: ${msg.reason}" }
+            agent.onRequestComplete(state.request, event.status, event.durationMs)
+        }
+        return AgentResponse.defaultAllow()
+    }
+
+    private suspend fun onGuardrailInspect(event: GuardrailInspectEvent): AgentResponse {
+        val response = agent.onGuardrailInspect(event)
+        return AgentResponse(
+            audit = AuditMetadata(
+                tags = if (response.detected) listOf("guardrail_detected") else emptyList(),
+                ruleIds = response.detections.map { it.category },
+                confidence = response.confidence.toFloat(),
+                custom = mapOf(
+                    "guardrail_response" to protocolJson.encodeToJsonElement(GuardrailResponse.serializer(), response)
+                )
+            )
+        )
+    }
+
+    /** A request was cancelled by the proxy (UDS 0x40 / gRPC `CancelRequest`). */
+    suspend fun handleCancel(correlationId: String, reason: String?) {
+        if (forget(correlationId) != null) {
             try {
-                agent.onRequestCancelled(msg.requestId, msg.reason)
+                agentV2?.onRequestCancelled(correlationId, reason)
             } catch (e: Exception) {
-                logger.error(e) { "Error in onRequestCancelled for ${msg.requestId}" }
+                logger.error(e) { "Error in onRequestCancelled for $correlationId" }
             }
         }
     }
 
-    /**
-     * Handle cancel all requests.
-     */
-    suspend fun handleCancelAll(msg: CancelAllMessage) {
-        val requestIds = requests.keys.toList()
-        requests.clear()
-
-        logger.debug { "All ${requestIds.size} requests cancelled: ${msg.reason}" }
-
+    /** Cancel every in-flight request. */
+    suspend fun handleCancelAll(reason: String?) {
+        synchronized(requests) { requests.clear() }
         try {
-            agent.onAllRequestsCancelled(msg.reason)
+            agentV2?.onAllRequestsCancelled(reason)
         } catch (e: Exception) {
             logger.error(e) { "Error in onAllRequestsCancelled" }
         }
     }
 
-    /**
-     * Handle request completion (cleanup).
-     */
-    suspend fun handleRequestComplete(requestId: Long, status: Int, durationMs: Long) {
-        val state = requests.remove(requestId)
-        if (state != null) {
-            try {
-                agent.onRequestComplete(state.request, status, durationMs)
-            } catch (e: Exception) {
-                logger.error(e) { "Error in onRequestComplete for $requestId" }
-            }
-        }
-    }
-
-    /**
-     * Start draining - stop accepting new requests.
-     */
+    /** Start draining: new requests are blocked with 503. */
     suspend fun startDrain(timeoutMs: Long) {
         shutdownMutex.withLock {
             if (draining) return
             draining = true
             logger.info { "Starting drain with timeout ${timeoutMs}ms" }
-
             try {
-                agent.onDrain(timeoutMs)
+                agentV2?.onDrain(timeoutMs)
             } catch (e: Exception) {
                 logger.error(e) { "Error in onDrain" }
             }
         }
     }
 
-    /**
-     * Shutdown the handler and agent.
-     */
+    /** Shut the handler and agent down. */
     suspend fun shutdown() {
         shutdownMutex.withLock {
             draining = true
-
-            // Cancel all pending requests
-            val pendingCount = requests.size
-            if (pendingCount > 0) {
-                logger.info { "Cancelling $pendingCount pending requests during shutdown" }
-                handleCancelAll(CancelAllMessage(reason = "Agent shutdown"))
+            if (activeRequestCount() > 0) {
+                handleCancelAll("Agent shutdown")
             }
-
             try {
-                agent.onShutdown()
+                agentV2?.onShutdown()
             } catch (e: Exception) {
                 logger.error(e) { "Error in onShutdown" }
             }
-
-            logger.info { "Agent handler shutdown complete" }
         }
     }
 
-    /**
-     * Handle stream close notification.
-     */
+    /** A connection or stream closed. */
     suspend fun handleStreamClosed(streamId: String, error: Throwable?) {
         try {
-            agent.onStreamClosed(streamId, error)
+            agentV2?.onStreamClosed(streamId, error)
         } catch (e: Exception) {
             logger.error(e) { "Error in onStreamClosed for stream $streamId" }
         }
     }
 
-    /**
-     * Get count of active requests.
-     */
-    fun activeRequestCount(): Int = requests.size
+    /** Number of requests whose state is held. */
+    fun activeRequestCount(): Int = synchronized(requests) { requests.size }
 
-    /**
-     * Convert AgentResponse to DecisionMessageV2.
-     */
-    private fun toDecisionMessageV2(requestId: Long, response: AgentResponse): DecisionMessageV2 {
-        val decision = when (val d = response.decision) {
-            is ProtocolDecision.Allow -> DecisionV2.Allow
-            is ProtocolDecision.Block -> DecisionV2.Block(
-                status = d.status,
-                body = d.body,
-                headers = d.headers
-            )
-            is ProtocolDecision.Redirect -> DecisionV2.Redirect(
-                url = d.url,
-                status = d.status
-            )
-            is ProtocolDecision.Challenge -> DecisionV2.Block(
-                status = 403,
-                body = "Challenge required"
-            )
-        }
+    companion object {
+        /** Requests remembered between their header and body/response events. */
+        const val MAX_TRACKED_REQUESTS = 10_000
 
-        val requestHeaders = response.requestHeaders.map { op ->
-            when (op) {
-                is HeaderOp.Set -> HeaderOpV2.Set(op.name, op.value)
-                is HeaderOp.Add -> HeaderOpV2.Add(op.name, op.value)
-                is HeaderOp.Remove -> HeaderOpV2.Remove(op.name)
-            }
-        }
-
-        val responseHeaders = response.responseHeaders.map { op ->
-            when (op) {
-                is HeaderOp.Set -> HeaderOpV2.Set(op.name, op.value)
-                is HeaderOp.Add -> HeaderOpV2.Add(op.name, op.value)
-                is HeaderOp.Remove -> HeaderOpV2.Remove(op.name)
-            }
-        }
-
-        val audit = if (response.audit.tags.isNotEmpty() ||
-            response.audit.ruleIds.isNotEmpty() ||
-            response.audit.confidence != null ||
-            response.audit.reasonCodes.isNotEmpty() ||
-            response.audit.custom.isNotEmpty()
-        ) {
-            AuditMetadataV2(
-                tags = response.audit.tags,
-                ruleIds = response.audit.ruleIds,
-                confidence = response.audit.confidence,
-                reasonCodes = response.audit.reasonCodes,
-                custom = response.audit.custom
-            )
-        } else {
-            null
-        }
-
-        return DecisionMessageV2(
-            requestId = requestId,
-            decision = decision,
-            requestHeaders = requestHeaders,
-            responseHeaders = responseHeaders,
-            audit = audit
+        private fun placeholderHeaders(correlationId: String) = RequestHeadersEvent(
+            metadata = RequestMetadata(correlationId = correlationId, requestId = "", clientIp = "", clientPort = 0),
+            method = "",
+            uri = "",
+            headers = emptyMap()
         )
     }
 }
+
+/**
+ * The correlation id of an event payload (top level, or in `metadata`).
+ */
+fun correlationIdOf(payload: JsonObject): String {
+    (payload["correlation_id"] as? JsonPrimitive)?.takeIf { it.isString }?.let { return it.content }
+    val metadata = payload["metadata"] as? JsonObject ?: return ""
+    return (metadata["correlation_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
+}
+
+/** The response with its request's correlation id in `audit.custom.correlation_id`. */
+fun AgentResponse.withCorrelationId(correlationId: String): AgentResponse =
+    copy(audit = audit.copy(custom = audit.custom + ("correlation_id" to JsonPrimitive(correlationId))))

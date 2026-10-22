@@ -22,10 +22,9 @@ import kotlinx.serialization.json.JsonObject
  *     override val name = "my-agent-v2"
  *
  *     override fun capabilities(): AgentCapabilities = AgentCapabilities.builder()
- *         .handlesRequestHeaders(true)
+ *         .name("My agent")
+ *         .version("1.0.0")
  *         .handlesRequestBody(true)
- *         .supportsCancellation(true)
- *         .maxConcurrentRequests(100)
  *         .build()
  *
  *     override suspend fun onRequest(request: Request): Decision {
@@ -54,8 +53,7 @@ interface AgentV2 : Agent {
     /**
      * Returns the current health status of the agent.
      *
-     * Called periodically by the proxy for health checking.
-     * Override to provide custom health status based on agent state.
+     * Reported by [AgentRunnerV2.healthStatus]. Override to provide custom health status based on agent state.
      *
      * @return HealthStatus indicating current health
      */
@@ -64,8 +62,7 @@ interface AgentV2 : Agent {
     /**
      * Returns metrics about the agent's operation.
      *
-     * Called periodically for metrics collection.
-     * Override to provide custom metrics about agent performance.
+     * Reported by [AgentRunnerV2.metrics]. Override to provide custom metrics about agent performance.
      *
      * @return MetricsReport with current metrics
      */
@@ -78,10 +75,10 @@ interface AgentV2 : Agent {
      * or explicit cancellation. Override to clean up any resources
      * associated with the request.
      *
-     * @param requestId The ID of the cancelled request
+     * @param correlationId The correlation id of the cancelled request
      * @param reason Optional reason for cancellation
      */
-    suspend fun onRequestCancelled(requestId: Long, reason: String?) {
+    suspend fun onRequestCancelled(correlationId: String, reason: String?) {
         // Default: no-op
     }
 
@@ -197,50 +194,4 @@ interface ConfigurableAgentV2<T> : AgentV2 {
         this.config = parsed
         onConfigApplied(parsed)
     }
-}
-
-/**
- * V2-specific request wrapper with request ID for multiplexing.
- */
-data class RequestV2(
-    /** The underlying v1 request */
-    val request: Request,
-    /** Unique request ID for multiplexing */
-    val requestId: Long
-) {
-    // Delegate common properties to underlying request
-    val correlationId: String get() = request.correlationId
-    val method: String get() = request.method
-    val path: String get() = request.path
-    val uri: String get() = request.uri
-    val headers: Map<String, List<String>> get() = request.headers
-    val clientIp: String get() = request.clientIp
-
-    fun header(name: String): String? = request.header(name)
-    fun hasHeader(name: String): Boolean = request.hasHeader(name)
-    fun pathStartsWith(prefix: String): Boolean = request.pathStartsWith(prefix)
-    fun body(): ByteArray? = request.body()
-    fun bodyString(): String? = request.bodyString()
-}
-
-/**
- * V2-specific response wrapper with request ID for multiplexing.
- */
-data class ResponseV2(
-    /** The underlying v1 response */
-    val response: Response,
-    /** Unique request ID for multiplexing */
-    val requestId: Long
-) {
-    // Delegate common properties to underlying response
-    val correlationId: String get() = response.correlationId
-    val statusCode: Int get() = response.statusCode
-    val headers: Map<String, List<String>> get() = response.headers
-
-    fun header(name: String): String? = response.header(name)
-    fun hasHeader(name: String): Boolean = response.hasHeader(name)
-    fun isSuccess(): Boolean = response.isSuccess()
-    fun isError(): Boolean = response.isError()
-    fun body(): ByteArray? = response.body()
-    fun bodyString(): String? = response.bodyString()
 }

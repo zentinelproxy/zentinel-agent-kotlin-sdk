@@ -10,11 +10,14 @@ This guide will walk you through creating your first Zentinel agent in Kotlin.
 
 ## Installation
 
-Add the dependency to your `build.gradle.kts`:
+The SDK is not on Maven Central. Build it and publish it to your local Maven
+repository first (`./gradlew publishToMavenLocal` in a clone of this
+repository, see the [README](../README.md#install)), then add `mavenLocal()`
+to your repositories and add the dependency to your `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("io.raskell.zentinel:zentinel-agent-sdk:0.1.0")
+    implementation("io.raskell.zentinel:zentinel-agent-kotlin-sdk:0.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 }

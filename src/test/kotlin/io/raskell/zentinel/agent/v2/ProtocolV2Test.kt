@@ -1,7 +1,7 @@
 package io.raskell.zentinel.agent.v2
 
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.JsonPrimitive
+import io.raskell.zentinel.agent.EventType
+import kotlinx.serialization.json.*
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -20,7 +20,6 @@ class ProtocolV2Test {
             .supportsStreaming(true)
             .supportsCancellation(true)
             .maxConcurrentRequests(100)
-            .addFeature("sql-detection")
             .build()
 
         assertTrue(capabilities.handlesRequestHeaders)
@@ -30,7 +29,6 @@ class ProtocolV2Test {
         assertTrue(capabilities.supportsStreaming)
         assertTrue(capabilities.supportsCancellation)
         assertEquals(100, capabilities.maxConcurrentRequests)
-        assertTrue("sql-detection" in capabilities.supportedFeatures)
     }
 
     @Test
@@ -107,199 +105,82 @@ class ProtocolV2Test {
     }
 
     @Test
-    fun `HandshakeRequest serialization`() {
-        val request = HandshakeRequest(
-            protocolVersion = 2,
-            clientName = "zentinel-proxy",
-            supportedFeatures = listOf("streaming", "cancellation"),
-            supportedEncodings = listOf("json", "msgpack")
+    fun `message type codes match the proxy`() {
+        // zentinel_agent_protocol::v2::uds::MessageType
+        assertEquals(0x01, MessageType.HANDSHAKE_REQUEST.toInt())
+        assertEquals(0x02, MessageType.HANDSHAKE_RESPONSE.toInt())
+        assertEquals(0x10, MessageType.REQUEST_HEADERS.toInt())
+        assertEquals(0x11, MessageType.REQUEST_BODY_CHUNK.toInt())
+        assertEquals(0x12, MessageType.RESPONSE_HEADERS.toInt())
+        assertEquals(0x13, MessageType.RESPONSE_BODY_CHUNK.toInt())
+        assertEquals(0x14, MessageType.REQUEST_COMPLETE.toInt())
+        assertEquals(0x15, MessageType.WEBSOCKET_FRAME.toInt())
+        assertEquals(0x16, MessageType.GUARDRAIL_INSPECT.toInt())
+        assertEquals(0x17, MessageType.CONFIGURE.toInt())
+        assertEquals(0x20, MessageType.AGENT_RESPONSE.toInt())
+        assertEquals(0x40, MessageType.CANCEL.toInt())
+        assertEquals(0x41, MessageType.PING.toInt())
+        assertEquals(0x42, MessageType.PONG.toInt())
+        assertEquals(EventType.CONFIGURE, MessageType.eventType(MessageType.CONFIGURE))
+        assertNull(MessageType.eventType(MessageType.PING))
+    }
+
+    @Test
+    fun `parses the handshake request the proxy sends`() {
+        // What zentinel's UDS client writes (UdsHandshakeRequest).
+        val json = """{"supported_versions":[2],"proxy_id":"zentinel-proxy","proxy_version":"0.6.50",""" +
+            """"config":{"greeting":"hi"},"supported_encodings":["msgpack","json"]}"""
+        val request = protocolV2Json.decodeFromString(HandshakeRequest.serializer(), json)
+        assertEquals(listOf(2), request.supportedVersions)
+        assertEquals("zentinel-proxy", request.proxyId)
+        assertEquals("0.6.50", request.proxyVersion)
+        assertEquals(JsonPrimitive("hi"), request.config!!.jsonObject["greeting"])
+    }
+
+    @Test
+    fun `handshake response has every field UdsHandshakeResponse requires`() {
+        val caps = AgentCapabilities.builder().version("1.2.3").handlesRequestBody(true).build()
+        val response = HandshakeResponse(capabilities = caps.toUds("my-agent"), success = true)
+        val json = protocolV2Json.encodeToJsonElement(HandshakeResponse.serializer(), response).jsonObject
+
+        assertEquals(setOf("protocol_version", "capabilities", "success", "error", "encoding"), json.keys)
+        assertEquals(JsonPrimitive(2), json["protocol_version"])
+        assertEquals(JsonPrimitive(true), json["success"])
+        assertEquals(JsonNull, json["error"])
+        assertEquals(JsonPrimitive("json"), json["encoding"])
+
+        val c = json.getValue("capabilities").jsonObject
+        assertEquals(setOf("agent_id", "name", "version", "supported_events", "features", "limits"), c.keys)
+        assertEquals(JsonPrimitive("my-agent"), c["agent_id"])
+        assertEquals(JsonPrimitive("my-agent"), c["name"])
+        assertEquals(JsonPrimitive("1.2.3"), c["version"])
+        assertEquals(JsonArray(listOf(JsonPrimitive(1), JsonPrimitive(2))), c["supported_events"])
+        assertEquals(
+            setOf(
+                "streaming_body", "websocket", "guardrails", "config_push", "metrics_export",
+                "concurrent_requests", "cancellation", "flow_control", "health_reporting"
+            ),
+            c.getValue("features").jsonObject.keys
         )
-
-        val json = protocolV2Json.encodeToString(request)
-
-        assertTrue(json.contains("\"protocol_version\":2"))
-        assertTrue(json.contains("\"client_name\":\"zentinel-proxy\""))
-        assertTrue(json.contains("\"supported_features\""))
-    }
-
-    @Test
-    fun `HandshakeResponse serialization`() {
-        val response = HandshakeResponse(
-            protocolVersion = 2,
-            agentName = "test-agent",
-            capabilities = AgentCapabilities.requestOnly(),
-            encoding = "json"
+        assertEquals(
+            setOf("max_body_size", "max_concurrency", "preferred_chunk_size"),
+            c.getValue("limits").jsonObject.keys
         )
-
-        val json = protocolV2Json.encodeToString(response)
-
-        assertTrue(json.contains("\"protocol_version\":2"))
-        assertTrue(json.contains("\"agent_name\":\"test-agent\""))
-        assertTrue(json.contains("\"capabilities\""))
-        assertTrue(json.contains("\"encoding\":\"json\""))
     }
 
     @Test
-    fun `DecisionV2 Allow serialization`() {
-        val decision = DecisionMessageV2(
-            requestId = 123,
-            decision = DecisionV2.Allow
-        )
-
-        val json = protocolV2Json.encodeToString(decision)
-
-        assertTrue(json.contains("\"request_id\":123"))
-        assertTrue(json.contains("\"allow\""))
+    fun `event numbers per transport`() {
+        assertEquals(0, EventType.CONFIGURE.udsNumber())
+        assertEquals(8, EventType.CONFIGURE.grpcNumber())
+        assertEquals(1, EventType.REQUEST_HEADERS.udsNumber())
+        assertEquals(1, EventType.REQUEST_HEADERS.grpcNumber())
+        assertEquals(7, EventType.GUARDRAIL_INSPECT.udsNumber())
     }
 
     @Test
-    fun `DecisionV2 Block serialization`() {
-        val decision = DecisionMessageV2(
-            requestId = 456,
-            decision = DecisionV2.Block(
-                status = 403,
-                body = "Access denied",
-                headers = mapOf("X-Error" to "true")
-            )
-        )
-
-        val json = protocolV2Json.encodeToString(decision)
-
-        assertTrue(json.contains("\"request_id\":456"))
-        assertTrue(json.contains("\"block\""))
-        assertTrue(json.contains("\"status\":403"))
-        assertTrue(json.contains("\"body\":\"Access denied\""))
-    }
-
-    @Test
-    fun `DecisionV2 Redirect serialization`() {
-        val decision = DecisionMessageV2(
-            requestId = 789,
-            decision = DecisionV2.Redirect(
-                url = "/login",
-                status = 302
-            )
-        )
-
-        val json = protocolV2Json.encodeToString(decision)
-
-        assertTrue(json.contains("\"request_id\":789"))
-        assertTrue(json.contains("\"redirect\""))
-        assertTrue(json.contains("\"url\":\"/login\""))
-        assertTrue(json.contains("\"status\":302"))
-    }
-
-    @Test
-    fun `RequestHeadersV2 deserialization`() {
-        val json = """
-            {
-                "request_id": 100,
-                "metadata": {
-                    "correlation_id": "corr-123",
-                    "client_ip": "192.168.1.1",
-                    "client_port": 12345,
-                    "protocol": "HTTP/2"
-                },
-                "method": "POST",
-                "uri": "/api/users",
-                "headers": {
-                    "Content-Type": ["application/json"]
-                },
-                "has_body": true
-            }
-        """.trimIndent()
-
-        val msg = protocolV2Json.decodeFromString<RequestHeadersV2>(json)
-
-        assertEquals(100, msg.requestId)
-        assertEquals("corr-123", msg.metadata.correlationId)
-        assertEquals("192.168.1.1", msg.metadata.clientIp)
-        assertEquals(12345, msg.metadata.clientPort)
-        assertEquals("HTTP/2", msg.metadata.protocol)
-        assertEquals("POST", msg.method)
-        assertEquals("/api/users", msg.uri)
-        assertTrue(msg.hasBody)
-    }
-
-    @Test
-    fun `CancelRequestMessage serialization`() {
-        val msg = CancelRequestMessage(
-            requestId = 999,
-            reason = "Client disconnected"
-        )
-
-        val json = protocolV2Json.encodeToString(msg)
-
-        assertTrue(json.contains("\"request_id\":999"))
-        assertTrue(json.contains("\"reason\":\"Client disconnected\""))
-    }
-
-    @Test
-    fun `RegistrationRequest serialization`() {
-        val request = RegistrationRequest(
-            protocolVersion = 2,
-            agentId = "waf-worker-1",
-            capabilities = AgentCapabilities.fullInspection(),
-            authToken = "secret-token"
-        )
-
-        val json = protocolV2Json.encodeToString(request)
-
-        assertTrue(json.contains("\"protocol_version\":2"))
-        assertTrue(json.contains("\"agent_id\":\"waf-worker-1\""))
-        assertTrue(json.contains("\"auth_token\":\"secret-token\""))
-    }
-
-    @Test
-    fun `RegistrationResponse deserialization`() {
-        val json = """
-            {
-                "accepted": true,
-                "assigned_id": "conn-001"
-            }
-        """.trimIndent()
-
-        val response = protocolV2Json.decodeFromString<RegistrationResponse>(json)
-
-        assertTrue(response.accepted)
-        assertNull(response.error)
-        assertEquals("conn-001", response.assignedId)
-    }
-
-    @Test
-    fun `HeaderOpV2 serialization`() {
-        val set = HeaderOpV2.Set("X-User-ID", "123")
-        val add = HeaderOpV2.Add("X-Tag", "important")
-        val remove = HeaderOpV2.Remove("Cookie")
-
-        val setJson = protocolV2Json.encodeToString<HeaderOpV2>(set)
-        val addJson = protocolV2Json.encodeToString<HeaderOpV2>(add)
-        val removeJson = protocolV2Json.encodeToString<HeaderOpV2>(remove)
-
-        assertTrue(setJson.contains("\"set\""))
-        assertTrue(setJson.contains("\"X-User-ID\""))
-        assertTrue(addJson.contains("\"add\""))
-        assertTrue(addJson.contains("\"X-Tag\""))
-        assertTrue(removeJson.contains("\"remove\""))
-        assertTrue(removeJson.contains("\"Cookie\""))
-    }
-
-    @Test
-    fun `AuditMetadataV2 serialization`() {
-        val audit = AuditMetadataV2(
-            tags = listOf("blocked", "security"),
-            ruleIds = listOf("SQLI-001"),
-            confidence = 0.95f,
-            reasonCodes = listOf("MALICIOUS_PAYLOAD"),
-            custom = mapOf("pattern" to JsonPrimitive("SELECT.*"))
-        )
-
-        val json = protocolV2Json.encodeToString(audit)
-
-        assertTrue(json.contains("\"tags\":[\"blocked\",\"security\"]"))
-        assertTrue(json.contains("\"rule_ids\":[\"SQLI-001\"]"))
-        assertTrue(json.contains("\"confidence\":0.95"))
-        assertTrue(json.contains("\"reason_codes\":[\"MALICIOUS_PAYLOAD\"]"))
-        assertTrue(json.contains("\"pattern\":\"SELECT.*\""))
+    fun `frame length counts the type byte`() {
+        val buffer = AgentRunnerV2.encodeFrame(MessageType.PONG, "{}".toByteArray())
+        val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
+        assertEquals(listOf<Byte>(0, 0, 0, 3, 0x42, '{'.code.toByte(), '}'.code.toByte()), bytes.toList())
     }
 }

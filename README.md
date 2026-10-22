@@ -9,9 +9,10 @@
 
 <h3 align="center">Kotlin agent SDK</h3>
 
-<p align="center">Write Zentinel agents in Kotlin on the JVM, speaking agent protocol v2 over a Unix socket.</p>
+<p align="center">Write Zentinel agents in Kotlin on the JVM, speaking agent protocol v2 over a Unix socket or gRPC.</p>
 
 <p align="center">
+  <a href="https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-9b4d8a?style=flat&labelColor=1f161e">
   <img alt="Agent protocol: v2" src="https://img.shields.io/badge/agent%20protocol-v2-f68d31?style=flat&labelColor=1f161e">
   <img alt="JDK 21+" src="https://img.shields.io/badge/jdk-21%2B-f68d31?style=flat&labelColor=1f161e&logo=openjdk&logoColor=white">
@@ -25,17 +26,20 @@
 
 The SDK gives you a coroutine-based `Agent` interface with one suspend function
 per event, a `Decision` builder, typed configuration, and in the `v2` package
-a runner with health and metrics reporting. It is not on Maven Central; build
-it and publish it to your local Maven repository.
+a runner with Unix socket and gRPC transports and health and metrics
+reporting. It is not on Maven Central; build it and publish it to your local
+Maven repository (see [Install](#install)).
 
-> **Status (checked on 2026-10-21 against Zentinel 0.6.50): agents built with this SDK do not connect to Zentinel.**
-> The `v2` Unix socket runner uses the v2 framing but parses a different
-> handshake request from the one the proxy sends (`Field 'client_name' is
-> required`), so every connection is dropped. The `v2` "gRPC" transport is a
-> plain TCP socket with the UDS framing, not gRPC, and the root package's
-> `PROTOCOL_VERSION` is still 1. The repository has no CI; its 102 unit tests
-> pass locally with Gradle 8.5 and JDK 21. The quick start shows the intended
-> shape.
+> **Status (checked on 2026-10-22): agents built with this SDK work with Zentinel over agent protocol v2, on both the Unix socket and gRPC.**
+> CI runs them behind a real `zentinel` binary through the shared
+> [conformance harness](https://github.com/zentinelproxy/zentinel/tree/main/sdk-conformance):
+> handshake, configuration, request and response header changes, blocking,
+> request-body inspection, and reconnecting after the agent restarts all pass.
+> Delivery of the agent's `config { }` block to `onConfigure` needs a Zentinel
+> with zentinel#603, which is on `main` but not in a release yet (26.10_7 and
+> earlier never send it). Version 0.2.0 and earlier could not connect at all
+> (zentinel#600): the Unix socket runner expected a different handshake, and
+> the "gRPC" transport was a plain TCP socket.
 
 ## Quick start
 
@@ -62,7 +66,9 @@ fun main() = runBlocking {
 }
 ```
 
-Run it with `gradle run`. It listens on `/tmp/hello.sock`.
+Run it with `gradle run`. It listens on `/tmp/hello.sock`. The same agent is
+[`examples/HelloAgent.kt`](examples/HelloAgent.kt), which CI runs through the
+conformance harness.
 
 Then point Zentinel at the socket. This assumes your config already defines a
 listener and an upstream named `backend`:
@@ -101,8 +107,10 @@ request on the route then reaches `backend` with `X-Hello: from-agent`.
 instead of letting requests through unprocessed, so a wiring mistake shows up
 on the first request.
 
-With this SDK as it is today, that 503 is what you get: see the status note
-above.
+To serve gRPC instead, use `AgentRunnerV2Config.grpc("127.0.0.1", 50051)` and
+point the agent at it with `grpc "http://127.0.0.1:50051"` in place of
+`unix-socket`. `runAgentV2(agent, args)` does either from the command line:
+`--socket PATH`, `--grpc HOST:PORT`, or both.
 
 ## Install
 
@@ -111,12 +119,11 @@ Build the SDK and publish it to `~/.m2`:
 ```bash
 git clone https://github.com/zentinelproxy/zentinel-agent-kotlin-sdk
 cd zentinel-agent-kotlin-sdk
-mise install                  # JDK 21 and Gradle 8.5
-gradle publishToMavenLocal
+mise install                  # JDK 21 (or any JDK 21 on your PATH)
+./gradlew publishToMavenLocal
 ```
 
-Use an installed Gradle: the repository has no `gradle-wrapper.jar`, so
-`./gradlew` fails. Then, in your project's `build.gradle.kts`:
+Then, in your project's `build.gradle.kts`:
 
 ```kotlin
 plugins {
@@ -130,7 +137,7 @@ repositories {
 }
 
 dependencies {
-    implementation("io.raskell.zentinel:zentinel-agent-kotlin-sdk:0.2.0")
+    implementation("io.raskell.zentinel:zentinel-agent-kotlin-sdk:0.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
 }
 
@@ -139,15 +146,22 @@ kotlin { jvmToolchain(21) }
 application { mainClass.set("MainKt") }
 ```
 
+Instead of publishing, a Gradle build can also use a clone directly with
+`includeBuild("../zentinel-agent-kotlin-sdk")` in its `settings.gradle.kts`.
+
 ## API overview
 
 - **`Agent`**: `name`, `onRequest`, `onRequestBody`, `onResponse`,
   `onResponseBody`, `onRequestComplete`, `onConfigure`, `onGuardrailInspect`,
   with allow-everything defaults.
 - **`v2.AgentV2`**: adds `capabilities()`, `healthStatus()`, `metrics()`,
-  cancellation, drain and shutdown hooks. `v2.AgentRunnerV2(agent, config)`
-  with `AgentRunnerV2Config.uds(path)`; `runAgentV2(agent, args)` reads
-  `--socket`, `--transport`, `--host`, `--port`.
+  cancellation (by correlation id), drain and shutdown hooks.
+  `v2.AgentRunnerV2(agent, config)` with `AgentRunnerV2Config.uds(path)`,
+  `.grpc(host, port)` or `.both(..)`; `runAgentV2(agent, args)` reads
+  `--socket PATH` and `--grpc HOST:PORT`. The gRPC transport is the proxy's
+  `zentinel.agent.v2.AgentServiceV2`, generated from its `agent_v2.proto`
+  (copied into `src/main/proto/`). `AgentRunner` and `runAgent` from the root
+  package are wrappers over the v2 runner.
 - **`Request` / `Response`**: header, path, query, client IP and body accessors.
 - **`Decision`**: `allow()`, `deny()`, `unauthorized()`, `rateLimited()`,
   `block(status)`, `redirect(url)`, `challenge(..)`, then chain
@@ -155,17 +169,29 @@ application { mainClass.set("MainKt") }
   `withJsonBody`, `withTag`, `withRuleId`, `withConfidence`, `withMetadata`,
   `withRoutingMetadata`, body mutations.
 
-Examples are in [`examples/`](examples/).
+Examples are in [`examples/`](examples/); `./gradlew installExamples` compiles
+them and puts them with their classpath in `build/examples/lib`, so
+`java -cp 'build/examples/lib/*' io.raskell.zentinel.agent.examples.ConformanceAgentKt --socket /tmp/c.sock`
+runs one.
 
 ## Development
 
 ```bash
-mise install          # JDK 21, Gradle 8.5
-gradle build
-gradle test
+mise install          # JDK 21
+./gradlew build       # compiles, runs the unit tests, installs the examples
 ```
 
-There is no CI workflow and no lint or API-doc task configured.
+To run the examples behind a real Zentinel through the conformance harness
+(the same checks CI runs), point the integration test at a `zentinel`
+binary built from `main` and a checkout of zentinel:
+
+```bash
+ZENTINEL_BIN=/path/to/zentinel \
+ZENTINEL_CONFORMANCE_HARNESS=/path/to/zentinel/sdk-conformance/run.py \
+./gradlew test --tests '*ConformanceTest*'
+```
+
+No lint or API-doc task is configured.
 
 ## Related
 

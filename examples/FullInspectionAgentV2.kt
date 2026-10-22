@@ -71,7 +71,7 @@ class FullInspectionAgentV2 : ConfigurableAgentV2<FullInspectionAgentV2.Config> 
         .supportsStreaming(true)
         .supportsCancellation(true)
         .maxConcurrentRequests(50)
-        .addFeatures("sql-injection-detection", "xss-detection", "sensitive-data-filter")
+        .version("1.0.0")
         .build()
 
     override fun healthStatus(): HealthStatus {
@@ -203,9 +203,9 @@ class FullInspectionAgentV2 : ConfigurableAgentV2<FullInspectionAgentV2.Config> 
         return Decision.allow()
     }
 
-    override suspend fun onRequestCancelled(requestId: Long, reason: String?) {
+    override suspend fun onRequestCancelled(correlationId: String, reason: String?) {
         activeRequests.decrementAndGet()
-        println("[${name}] Request $requestId cancelled: $reason")
+        println("[${name}] Request $correlationId cancelled: $reason")
     }
 
     override suspend fun onAllRequestsCancelled(reason: String?) {
