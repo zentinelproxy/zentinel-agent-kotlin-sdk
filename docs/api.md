@@ -536,7 +536,7 @@ val payload = request.bodyJson(Payload.serializer())
 
 ```kotlin
 request.correlationId()  // Request correlation ID
-request.requestId()      // Unique request ID
+request.requestId()      // Proxy request ID
 request.clientIp()       // Client IP address
 request.clientPort()     // Client port
 request.serverName()     // Server name

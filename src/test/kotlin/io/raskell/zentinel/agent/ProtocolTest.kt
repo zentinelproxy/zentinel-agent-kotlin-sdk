@@ -1,7 +1,9 @@
 package io.raskell.zentinel.agent
 
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -193,5 +195,75 @@ class ProtocolTest {
         assertTrue(response.requestHeaders.isEmpty())
         assertTrue(response.responseHeaders.isEmpty())
         assertTrue(response.routingMetadata.isEmpty())
+    }
+
+    // The proxy deserializes AgentResponse with serde: enums are externally
+    // tagged and a unit variant is a bare string. A "type" discriminator
+    // (kotlinx.serialization's default for sealed classes) is rejected.
+
+    @Test
+    fun `protocol version is 2`() {
+        assertEquals(2, PROTOCOL_VERSION)
+        assertEquals(2, Decision.allow().build().version)
+    }
+
+    @Test
+    fun `allow is a bare string as serde expects`() {
+        val json = protocolJson.encodeToJsonElement(AgentResponse.serializer(), AgentResponse()).jsonObject
+        assertEquals(JsonPrimitive("allow"), json["decision"])
+    }
+
+    @Test
+    fun `block is externally tagged as serde expects`() {
+        val json = protocolJson.encodeToJsonElement(
+            AgentResponse.serializer(),
+            Decision.block(403).withBody("nope").build()
+        ).jsonObject
+        assertEquals(
+            Json.parseToJsonElement("""{"block":{"status":403,"body":"nope","headers":null}}"""),
+            json["decision"]
+        )
+    }
+
+    @Test
+    fun `header ops are externally tagged as serde expects`() {
+        val json = protocolJson.encodeToJsonElement(
+            AgentResponse.serializer(),
+            Decision.allow().addRequestHeader("X-Hello", "from-agent").removeResponseHeader("Server").build()
+        ).jsonObject
+        assertEquals(
+            Json.parseToJsonElement("""[{"set":{"name":"X-Hello","value":"from-agent"}}]"""),
+            json["request_headers"]
+        )
+        assertEquals(
+            Json.parseToJsonElement("""[{"remove":{"name":"Server"}}]"""),
+            json["response_headers"]
+        )
+    }
+
+    @Test
+    fun `decisions and header ops round-trip in serde form`() {
+        val serde = """{"version":2,"decision":{"redirect":{"url":"/login","status":302}},""" +
+            """"request_headers":[{"add":{"name":"A","value":"b"}}],"response_headers":[],""" +
+            """"routing_metadata":{},"audit":{"tags":[],"rule_ids":[],"reason_codes":[],"custom":{}},"needs_more":false}"""
+        val response = protocolJson.decodeFromString(AgentResponse.serializer(), serde)
+        assertEquals(ProtocolDecision.Redirect("/login", 302), response.decision)
+        assertEquals(listOf<HeaderOp>(HeaderOp.Add("A", "b")), response.requestHeaders)
+        assertEquals(
+            ProtocolDecision.Allow,
+            protocolJson.decodeFromString(AgentResponse.serializer(), """{"version":2,"decision":"allow"}""").decision
+        )
+    }
+
+    @Test
+    fun `configure event is the proxy's envelope`() {
+        val event = protocolJson.decodeFromString(
+            ConfigureEvent.serializer(),
+            """{"config":{"nested":{"value":"x"}},"config_version":null,"correlation_id":"zentinel-configure-a-1"}"""
+        )
+        assertEquals(
+            JsonPrimitive("x"),
+            event.configObject["nested"]!!.jsonObject["value"]
+        )
     }
 }

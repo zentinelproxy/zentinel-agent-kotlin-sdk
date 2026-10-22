@@ -1,5 +1,6 @@
 package io.raskell.zentinel.agent.v2
 
+import io.raskell.zentinel.agent.EventType
 import kotlinx.serialization.*
 import kotlinx.serialization.json.*
 
@@ -19,7 +20,11 @@ const val MAX_MESSAGE_SIZE_UDS: Int = 16 * 1024 * 1024
 const val MAX_MESSAGE_SIZE_GRPC: Int = 10 * 1024 * 1024
 
 /**
- * V2 message types for UDS binary protocol.
+ * The type byte of a v2 UDS frame.
+ *
+ * Every frame is `length (4 bytes, big-endian) | type (1 byte) | JSON payload`,
+ * where `length` counts the type byte and the payload. This matches
+ * `zentinel_agent_protocol::v2::uds` in the proxy.
  */
 object MessageType {
     const val HANDSHAKE_REQUEST: Byte = 0x01
@@ -28,86 +33,207 @@ object MessageType {
     const val REQUEST_BODY_CHUNK: Byte = 0x11
     const val RESPONSE_HEADERS: Byte = 0x12
     const val RESPONSE_BODY_CHUNK: Byte = 0x13
-    const val DECISION: Byte = 0x20
-    const val BODY_MUTATION: Byte = 0x21
-    const val CANCEL_REQUEST: Byte = 0x30
-    const val CANCEL_ALL: Byte = 0x31
-    const val PING: Byte = 0xF0.toByte()
-    const val PONG: Byte = 0xF1.toByte()
+    const val REQUEST_COMPLETE: Byte = 0x14
+    const val WEBSOCKET_FRAME: Byte = 0x15
+    const val GUARDRAIL_INSPECT: Byte = 0x16
+    const val CONFIGURE: Byte = 0x17
+    const val AGENT_RESPONSE: Byte = 0x20
+    const val HEALTH_STATUS: Byte = 0x30
+    const val METRICS_REPORT: Byte = 0x31
+    const val CONFIG_UPDATE_REQUEST: Byte = 0x32
+    const val FLOW_CONTROL: Byte = 0x33
+    const val CANCEL: Byte = 0x40
+    const val PING: Byte = 0x41
+    const val PONG: Byte = 0x42
+
+    /** The event a UDS message type carries, or null for control messages. */
+    fun eventType(type: Byte): EventType? = when (type) {
+        REQUEST_HEADERS -> EventType.REQUEST_HEADERS
+        REQUEST_BODY_CHUNK -> EventType.REQUEST_BODY_CHUNK
+        RESPONSE_HEADERS -> EventType.RESPONSE_HEADERS
+        RESPONSE_BODY_CHUNK -> EventType.RESPONSE_BODY_CHUNK
+        REQUEST_COMPLETE -> EventType.REQUEST_COMPLETE
+        WEBSOCKET_FRAME -> EventType.WEBSOCKET_FRAME
+        GUARDRAIL_INSPECT -> EventType.GUARDRAIL_INSPECT
+        CONFIGURE -> EventType.CONFIGURE
+        else -> null
+    }
+}
+
+/** Event numbers as the UDS handshake reports them (`supported_events`). */
+fun EventType.udsNumber(): Int = when (this) {
+    EventType.CONFIGURE -> 0
+    EventType.REQUEST_HEADERS -> 1
+    EventType.REQUEST_BODY_CHUNK -> 2
+    EventType.RESPONSE_HEADERS -> 3
+    EventType.RESPONSE_BODY_CHUNK -> 4
+    EventType.REQUEST_COMPLETE -> 5
+    EventType.WEBSOCKET_FRAME -> 6
+    EventType.GUARDRAIL_INSPECT -> 7
+}
+
+/** Event numbers of the gRPC `EventType` enum. */
+fun EventType.grpcNumber(): Int = when (this) {
+    EventType.REQUEST_HEADERS -> 1
+    EventType.REQUEST_BODY_CHUNK -> 2
+    EventType.RESPONSE_HEADERS -> 3
+    EventType.RESPONSE_BODY_CHUNK -> 4
+    EventType.REQUEST_COMPLETE -> 5
+    EventType.WEBSOCKET_FRAME -> 6
+    EventType.GUARDRAIL_INSPECT -> 7
+    EventType.CONFIGURE -> 8
 }
 
 /**
- * Handshake request sent by proxy to agent.
+ * Handshake request the proxy sends first on every UDS connection
+ * (`UdsHandshakeRequest`).
  */
 @Serializable
 data class HandshakeRequest(
-    @SerialName("protocol_version") val protocolVersion: Int = PROTOCOL_V2_VERSION,
-    @SerialName("client_name") val clientName: String,
-    @SerialName("supported_features") val supportedFeatures: List<String> = emptyList(),
-    @SerialName("supported_encodings") val supportedEncodings: List<String> = listOf("json")
+    @SerialName("supported_versions") val supportedVersions: List<Int> = listOf(PROTOCOL_V2_VERSION),
+    @SerialName("proxy_id") val proxyId: String = "",
+    @SerialName("proxy_version") val proxyVersion: String = "",
+    val config: JsonElement? = null,
+    @SerialName("supported_encodings") val supportedEncodings: List<String> = emptyList()
 )
 
 /**
- * Handshake response sent by agent to proxy.
+ * Handshake response (`UdsHandshakeResponse`). Every field is required by
+ * the proxy, `capabilities` included, even when the handshake is refused.
  */
 @Serializable
 data class HandshakeResponse(
     @SerialName("protocol_version") val protocolVersion: Int = PROTOCOL_V2_VERSION,
-    @SerialName("agent_name") val agentName: String,
-    val capabilities: AgentCapabilities,
+    val capabilities: UdsCapabilities,
+    val success: Boolean,
+    val error: String? = null,
     val encoding: String = "json"
 )
 
-/**
- * Agent capabilities advertised during handshake.
- */
+/** `capabilities` of the UDS handshake response (`UdsCapabilities`). */
 @Serializable
+data class UdsCapabilities(
+    @SerialName("agent_id") val agentId: String,
+    val name: String,
+    val version: String,
+    @SerialName("supported_events") val supportedEvents: List<Int>,
+    val features: AgentFeatures,
+    val limits: UdsLimits
+)
+
+/** `limits` of the UDS handshake response (`UdsLimits`). */
+@Serializable
+data class UdsLimits(
+    @SerialName("max_body_size") val maxBodySize: Long,
+    @SerialName("max_concurrency") val maxConcurrency: Int,
+    @SerialName("preferred_chunk_size") val preferredChunkSize: Long
+)
+
+/** Features the agent supports (all nine are sent in the handshake). */
+@Serializable
+data class AgentFeatures(
+    @SerialName("streaming_body") val streamingBody: Boolean = false,
+    val websocket: Boolean = false,
+    val guardrails: Boolean = false,
+    @SerialName("config_push") val configPush: Boolean = false,
+    @SerialName("metrics_export") val metricsExport: Boolean = false,
+    @SerialName("concurrent_requests") val concurrentRequests: Int = 10,
+    val cancellation: Boolean = false,
+    @SerialName("flow_control") val flowControl: Boolean = false,
+    @SerialName("health_reporting") val healthReporting: Boolean = false
+)
+
+/** Resource limits the agent advertises. */
+data class AgentLimits(
+    val maxBodySize: Long = 10L * 1024 * 1024,
+    val maxConcurrency: Int = 100,
+    val preferredChunkSize: Long = 64L * 1024
+)
+
+/**
+ * Agent capabilities advertised during the handshake.
+ *
+ * `agentId` and `name` default to the agent's [io.raskell.zentinel.agent.Agent.name].
+ * `supportedEvents` is informational: which events reach the agent is decided
+ * by the `events` list of the agent's block in the proxy configuration.
+ */
 data class AgentCapabilities(
-    @SerialName("handles_request_headers") val handlesRequestHeaders: Boolean = true,
-    @SerialName("handles_request_body") val handlesRequestBody: Boolean = false,
-    @SerialName("handles_response_headers") val handlesResponseHeaders: Boolean = false,
-    @SerialName("handles_response_body") val handlesResponseBody: Boolean = false,
-    @SerialName("supports_streaming") val supportsStreaming: Boolean = false,
-    @SerialName("supports_cancellation") val supportsCancellation: Boolean = true,
-    @SerialName("max_concurrent_requests") val maxConcurrentRequests: Int? = null,
-    @SerialName("supported_features") val supportedFeatures: List<String> = emptyList()
+    val agentId: String? = null,
+    val name: String? = null,
+    val version: String = "0.0.0",
+    val supportedEvents: List<EventType> = DEFAULT_EVENTS,
+    val features: AgentFeatures = AgentFeatures(),
+    val limits: AgentLimits = AgentLimits(),
+    val healthReportIntervalMs: Int = 30_000
 ) {
+    val handlesRequestHeaders: Boolean get() = EventType.REQUEST_HEADERS in supportedEvents
+    val handlesRequestBody: Boolean get() = EventType.REQUEST_BODY_CHUNK in supportedEvents
+    val handlesResponseHeaders: Boolean get() = EventType.RESPONSE_HEADERS in supportedEvents
+    val handlesResponseBody: Boolean get() = EventType.RESPONSE_BODY_CHUNK in supportedEvents
+    val supportsStreaming: Boolean get() = features.streamingBody
+    val supportsCancellation: Boolean get() = features.cancellation
+    val maxConcurrentRequests: Int get() = features.concurrentRequests
+
+    /** The UDS handshake form, with [defaultName] filling a missing id or name. */
+    fun toUds(defaultName: String): UdsCapabilities = UdsCapabilities(
+        agentId = agentId ?: defaultName,
+        name = name ?: defaultName,
+        version = version,
+        supportedEvents = supportedEvents.map { it.udsNumber() }.distinct(),
+        features = features,
+        limits = UdsLimits(limits.maxBodySize, limits.maxConcurrency, limits.preferredChunkSize)
+    )
+
     /**
      * Builder for creating AgentCapabilities with a fluent API.
      */
     class Builder {
-        private var handlesRequestHeaders: Boolean = true
-        private var handlesRequestBody: Boolean = false
-        private var handlesResponseHeaders: Boolean = false
-        private var handlesResponseBody: Boolean = false
-        private var supportsStreaming: Boolean = false
-        private var supportsCancellation: Boolean = true
-        private var maxConcurrentRequests: Int? = null
-        private val supportedFeatures: MutableList<String> = mutableListOf()
+        private var agentId: String? = null
+        private var name: String? = null
+        private var version: String = "0.0.0"
+        private val events = linkedSetOf(EventType.REQUEST_HEADERS)
+        private var features = AgentFeatures()
+        private var limits = AgentLimits()
+        private var healthReportIntervalMs = 30_000
 
-        fun handlesRequestHeaders(value: Boolean) = apply { handlesRequestHeaders = value }
-        fun handlesRequestBody(value: Boolean) = apply { handlesRequestBody = value }
-        fun handlesResponseHeaders(value: Boolean) = apply { handlesResponseHeaders = value }
-        fun handlesResponseBody(value: Boolean) = apply { handlesResponseBody = value }
-        fun supportsStreaming(value: Boolean) = apply { supportsStreaming = value }
-        fun supportsCancellation(value: Boolean) = apply { supportsCancellation = value }
-        fun maxConcurrentRequests(value: Int?) = apply { maxConcurrentRequests = value }
-        fun addFeature(feature: String) = apply { supportedFeatures.add(feature) }
-        fun addFeatures(vararg features: String) = apply { supportedFeatures.addAll(features) }
+        fun agentId(value: String) = apply { agentId = value }
+        fun name(value: String) = apply { name = value }
+        fun version(value: String) = apply { version = value }
+        fun event(type: EventType, enabled: Boolean = true) = apply { if (enabled) events.add(type) else events.remove(type) }
+        fun handlesRequestHeaders(value: Boolean) = event(EventType.REQUEST_HEADERS, value)
+        fun handlesRequestBody(value: Boolean) = event(EventType.REQUEST_BODY_CHUNK, value)
+        fun handlesResponseHeaders(value: Boolean) = event(EventType.RESPONSE_HEADERS, value)
+        fun handlesResponseBody(value: Boolean) = event(EventType.RESPONSE_BODY_CHUNK, value)
+        fun handlesRequestComplete(value: Boolean) = event(EventType.REQUEST_COMPLETE, value)
+        fun handlesGuardrails(value: Boolean) = apply {
+            event(EventType.GUARDRAIL_INSPECT, value)
+            features = features.copy(guardrails = value)
+        }
+        fun supportsStreaming(value: Boolean) = apply { features = features.copy(streamingBody = value) }
+        fun supportsCancellation(value: Boolean) = apply { features = features.copy(cancellation = value) }
+        fun maxConcurrentRequests(value: Int?) = apply {
+            features = features.copy(concurrentRequests = value ?: AgentFeatures().concurrentRequests)
+        }
+        fun features(value: AgentFeatures) = apply { features = value }
+        fun limits(value: AgentLimits) = apply { limits = value }
+        fun maxBodySize(value: Long) = apply { limits = limits.copy(maxBodySize = value) }
+        fun healthReportIntervalMs(value: Int) = apply { healthReportIntervalMs = value }
 
         fun build() = AgentCapabilities(
-            handlesRequestHeaders = handlesRequestHeaders,
-            handlesRequestBody = handlesRequestBody,
-            handlesResponseHeaders = handlesResponseHeaders,
-            handlesResponseBody = handlesResponseBody,
-            supportsStreaming = supportsStreaming,
-            supportsCancellation = supportsCancellation,
-            maxConcurrentRequests = maxConcurrentRequests,
-            supportedFeatures = supportedFeatures.toList()
+            agentId = agentId,
+            name = name,
+            version = version,
+            supportedEvents = events.toList(),
+            features = features,
+            limits = limits,
+            healthReportIntervalMs = healthReportIntervalMs
         )
     }
 
     companion object {
+        /** The events a default agent declares. */
+        val DEFAULT_EVENTS = listOf(EventType.REQUEST_HEADERS)
+
         /** Create a builder for AgentCapabilities. */
         fun builder() = Builder()
 
@@ -116,12 +242,14 @@ data class AgentCapabilities(
 
         /** Capabilities for a full inspection agent. */
         fun fullInspection() = AgentCapabilities(
-            handlesRequestHeaders = true,
-            handlesRequestBody = true,
-            handlesResponseHeaders = true,
-            handlesResponseBody = true,
-            supportsStreaming = true,
-            supportsCancellation = true
+            supportedEvents = listOf(
+                EventType.REQUEST_HEADERS,
+                EventType.REQUEST_BODY_CHUNK,
+                EventType.RESPONSE_HEADERS,
+                EventType.RESPONSE_BODY_CHUNK,
+                EventType.REQUEST_COMPLETE
+            ),
+            features = AgentFeatures(streamingBody = true, cancellation = true)
         )
     }
 }
@@ -224,179 +352,11 @@ data class MetricsReport(
 }
 
 /**
- * V2 request headers message with request ID for multiplexing.
- */
-@Serializable
-data class RequestHeadersV2(
-    @SerialName("request_id") val requestId: Long,
-    val metadata: RequestMetadataV2,
-    val method: String,
-    val uri: String,
-    val headers: Map<String, List<String>> = emptyMap(),
-    @SerialName("has_body") val hasBody: Boolean = false
-)
-
-/**
- * V2 request metadata with additional fields.
- */
-@Serializable
-data class RequestMetadataV2(
-    @SerialName("correlation_id") val correlationId: String,
-    @SerialName("client_ip") val clientIp: String,
-    @SerialName("client_port") val clientPort: Int,
-    @SerialName("server_name") val serverName: String? = null,
-    val protocol: String = "HTTP/1.1",
-    @SerialName("tls_version") val tlsVersion: String? = null,
-    @SerialName("route_id") val routeId: String? = null,
-    val timestamp: String = ""
-)
-
-/**
- * V2 request body chunk message.
- */
-@Serializable
-data class RequestBodyChunkV2(
-    @SerialName("request_id") val requestId: Long,
-    @SerialName("chunk_index") val chunkIndex: Int,
-    val data: String,
-    @SerialName("is_last") val isLast: Boolean = false
-)
-
-/**
- * V2 response headers message.
- */
-@Serializable
-data class ResponseHeadersV2(
-    @SerialName("request_id") val requestId: Long,
-    @SerialName("status_code") val statusCode: Int,
-    val headers: Map<String, List<String>> = emptyMap(),
-    @SerialName("has_body") val hasBody: Boolean = false
-)
-
-/**
- * V2 response body chunk message.
- */
-@Serializable
-data class ResponseBodyChunkV2(
-    @SerialName("request_id") val requestId: Long,
-    @SerialName("chunk_index") val chunkIndex: Int,
-    val data: String,
-    @SerialName("is_last") val isLast: Boolean = false
-)
-
-/**
- * V2 decision message with request ID.
- */
-@Serializable
-data class DecisionMessageV2(
-    @SerialName("request_id") val requestId: Long,
-    val decision: DecisionV2,
-    @SerialName("request_headers") val requestHeaders: List<HeaderOpV2> = emptyList(),
-    @SerialName("response_headers") val responseHeaders: List<HeaderOpV2> = emptyList(),
-    val audit: AuditMetadataV2? = null
-)
-
-/**
- * V2 decision types.
- */
-@Serializable
-sealed class DecisionV2 {
-    @Serializable
-    @SerialName("allow")
-    data object Allow : DecisionV2()
-
-    @Serializable
-    @SerialName("block")
-    data class Block(
-        val status: Int,
-        val body: String? = null,
-        val headers: Map<String, String>? = null
-    ) : DecisionV2()
-
-    @Serializable
-    @SerialName("redirect")
-    data class Redirect(
-        val url: String,
-        val status: Int = 302
-    ) : DecisionV2()
-}
-
-/**
- * V2 header operation.
- */
-@Serializable
-sealed class HeaderOpV2 {
-    @Serializable
-    @SerialName("set")
-    data class Set(val name: String, val value: String) : HeaderOpV2()
-
-    @Serializable
-    @SerialName("add")
-    data class Add(val name: String, val value: String) : HeaderOpV2()
-
-    @Serializable
-    @SerialName("remove")
-    data class Remove(val name: String) : HeaderOpV2()
-}
-
-/**
- * V2 audit metadata.
- */
-@Serializable
-data class AuditMetadataV2(
-    val tags: List<String> = emptyList(),
-    @SerialName("rule_ids") val ruleIds: List<String> = emptyList(),
-    val confidence: Float? = null,
-    @SerialName("reason_codes") val reasonCodes: List<String> = emptyList(),
-    val custom: Map<String, JsonElement> = emptyMap()
-)
-
-/**
- * Cancel request message.
- */
-@Serializable
-data class CancelRequestMessage(
-    @SerialName("request_id") val requestId: Long,
-    val reason: String? = null
-)
-
-/**
- * Cancel all requests message.
- */
-@Serializable
-data class CancelAllMessage(
-    val reason: String? = null
-)
-
-/**
- * Registration request for reverse connections.
- */
-@Serializable
-data class RegistrationRequest(
-    @SerialName("protocol_version") val protocolVersion: Int = PROTOCOL_V2_VERSION,
-    @SerialName("agent_id") val agentId: String,
-    val capabilities: AgentCapabilities,
-    @SerialName("auth_token") val authToken: String? = null,
-    val metadata: JsonObject? = null
-)
-
-/**
- * Registration response for reverse connections.
- */
-@Serializable
-data class RegistrationResponse(
-    val accepted: Boolean,
-    val error: String? = null,
-    @SerialName("assigned_id") val assignedId: String? = null,
-    val config: JsonObject? = null
-)
-
-/**
  * JSON serializer for v2 protocol.
  */
 @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 val protocolV2Json = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
-    explicitNulls = false
+    explicitNulls = true
 }

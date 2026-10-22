@@ -107,15 +107,15 @@ class AgentV2Test {
 
     @Test
     fun `AgentV2 request cancellation callbacks`() = runBlocking {
-        var cancelledRequestId: Long? = null
+        var cancelledRequestId: String? = null
         var cancelledReason: String? = null
         var allCancelledReason: String? = null
 
         val agent = object : AgentV2 {
             override val name = "cancellation-agent"
 
-            override suspend fun onRequestCancelled(requestId: Long, reason: String?) {
-                cancelledRequestId = requestId
+            override suspend fun onRequestCancelled(correlationId: String, reason: String?) {
+                cancelledRequestId = correlationId
                 cancelledReason = reason
             }
 
@@ -124,8 +124,8 @@ class AgentV2Test {
             }
         }
 
-        agent.onRequestCancelled(123, "Client disconnected")
-        assertEquals(123L, cancelledRequestId)
+        agent.onRequestCancelled("req-123", "Client disconnected")
+        assertEquals("req-123", cancelledRequestId)
         assertEquals("Client disconnected", cancelledReason)
 
         agent.onAllRequestsCancelled("Agent shutdown")
@@ -168,52 +168,5 @@ class AgentV2Test {
         assertTrue(configApplied)
         assertFalse(agent.config.enabled)
         assertEquals(50, agent.config.threshold)
-    }
-
-    @Test
-    fun `RequestV2 delegates to underlying request`() {
-        val event = RequestHeadersEvent(
-            metadata = RequestMetadata(
-                correlationId = "corr-123",
-                requestId = "req-456",
-                clientIp = "127.0.0.1",
-                clientPort = 12345
-            ),
-            method = "POST",
-            uri = "/api/users?name=test",
-            headers = mapOf("Content-Type" to listOf("application/json"))
-        )
-
-        val request = Request.fromEvent(event)
-        val requestV2 = RequestV2(request, 100)
-
-        assertEquals(100, requestV2.requestId)
-        assertEquals("corr-123", requestV2.correlationId)
-        assertEquals("POST", requestV2.method)
-        assertEquals("/api/users", requestV2.path)
-        assertEquals("/api/users?name=test", requestV2.uri)
-        assertEquals("127.0.0.1", requestV2.clientIp)
-        assertEquals("application/json", requestV2.header("Content-Type"))
-        assertTrue(requestV2.hasHeader("content-type"))
-        assertTrue(requestV2.pathStartsWith("/api"))
-    }
-
-    @Test
-    fun `ResponseV2 delegates to underlying response`() {
-        val event = ResponseHeadersEvent(
-            correlationId = "corr-123",
-            status = 200,
-            headers = mapOf("Content-Type" to listOf("application/json"))
-        )
-
-        val response = Response.fromEvent(event)
-        val responseV2 = ResponseV2(response, 100)
-
-        assertEquals(100, responseV2.requestId)
-        assertEquals("corr-123", responseV2.correlationId)
-        assertEquals(200, responseV2.statusCode)
-        assertEquals("application/json", responseV2.header("Content-Type"))
-        assertTrue(responseV2.isSuccess())
-        assertFalse(responseV2.isError())
     }
 }

@@ -1,12 +1,14 @@
 package io.raskell.zentinel.agent
 
 import kotlinx.serialization.*
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.*
 
 /**
- * Agent protocol version.
+ * Agent protocol version. The proxy speaks only protocol v2.
  */
-const val PROTOCOL_VERSION: Int = 1
+const val PROTOCOL_VERSION: Int = 2
 
 /**
  * Maximum message size (10MB).
@@ -64,17 +66,25 @@ data class RequestMetadata(
     @SerialName("tls_cipher") val tlsCipher: String? = null,
     @SerialName("route_id") val routeId: String? = null,
     @SerialName("upstream_id") val upstreamId: String? = null,
-    val timestamp: String = ""
+    val timestamp: String = "",
+    val traceparent: String? = null
 )
 
 /**
- * Configure event.
+ * Configure event (UDS message 0x17, gRPC `ConfigureEvent`).
+ *
+ * The proxy sends it on every new connection, after the handshake, with the
+ * agent's `config { }` block from the proxy configuration. A non-object
+ * configuration is passed to `onConfigure` as an empty object.
  */
 @Serializable
 data class ConfigureEvent(
-    @SerialName("agent_id") val agentId: String,
-    val config: JsonObject
-)
+    val config: JsonElement? = null,
+    @SerialName("config_version") val configVersion: String? = null
+) {
+    /** The configuration as an object (empty when absent or not an object). */
+    val configObject: JsonObject get() = config as? JsonObject ?: JsonObject(emptyMap())
+}
 
 /**
  * Request headers event.
@@ -219,8 +229,11 @@ data class GuardrailResponse(
 
 /**
  * Header modification operation.
+ *
+ * Serialized the way the proxy's serde types expect it (externally tagged):
+ * `{"set":{"name":"X","value":"v"}}`, `{"remove":{"name":"X"}}`.
  */
-@Serializable
+@Serializable(with = HeaderOpSerializer::class)
 sealed class HeaderOp {
     @Serializable
     @SerialName("set")
@@ -255,8 +268,13 @@ data class BodyMutation(
 
 /**
  * Protocol decision types.
+ *
+ * Serialized the way the proxy's serde types expect it: `"allow"`,
+ * `{"block":{"status":403,"body":"..","headers":null}}`,
+ * `{"redirect":{"url":"..","status":302}}`,
+ * `{"challenge":{"challenge_type":"..","params":{}}}`.
  */
-@Serializable
+@Serializable(with = ProtocolDecisionSerializer::class)
 sealed class ProtocolDecision {
     @Serializable
     @SerialName("allow")
@@ -298,16 +316,6 @@ data class AuditMetadata(
 )
 
 /**
- * Agent request message.
- */
-@Serializable
-data class AgentRequest(
-    val version: Int,
-    @SerialName("event_type") val eventType: EventType,
-    val payload: JsonElement
-)
-
-/**
  * Agent response message.
  */
 @Serializable
@@ -336,9 +344,110 @@ data class AgentResponse(
     }
 }
 
+/** Serializes [HeaderOp] in serde's externally tagged form. */
+object HeaderOpSerializer : KSerializer<HeaderOp> {
+    override val descriptor = JsonElement.serializer().descriptor
+
+    fun toJson(op: HeaderOp): JsonObject = when (op) {
+        is HeaderOp.Set -> buildJsonObject {
+            putJsonObject("set") { put("name", op.name); put("value", op.value) }
+        }
+        is HeaderOp.Add -> buildJsonObject {
+            putJsonObject("add") { put("name", op.name); put("value", op.value) }
+        }
+        is HeaderOp.Remove -> buildJsonObject {
+            putJsonObject("remove") { put("name", op.name) }
+        }
+    }
+
+    fun fromJson(element: JsonElement): HeaderOp {
+        val obj = element.jsonObject
+        obj["set"]?.jsonObject?.let {
+            return HeaderOp.Set(it.getValue("name").jsonPrimitive.content, it["value"]?.jsonPrimitive?.content ?: "")
+        }
+        obj["add"]?.jsonObject?.let {
+            return HeaderOp.Add(it.getValue("name").jsonPrimitive.content, it["value"]?.jsonPrimitive?.content ?: "")
+        }
+        obj["remove"]?.jsonObject?.let {
+            return HeaderOp.Remove(it.getValue("name").jsonPrimitive.content)
+        }
+        throw SerializationException("Unknown header operation: $element")
+    }
+
+    override fun serialize(encoder: Encoder, value: HeaderOp) =
+        (encoder as JsonEncoder).encodeJsonElement(toJson(value))
+
+    override fun deserialize(decoder: Decoder): HeaderOp =
+        fromJson((decoder as JsonDecoder).decodeJsonElement())
+}
+
+/** Serializes [ProtocolDecision] in serde's externally tagged form. */
+object ProtocolDecisionSerializer : KSerializer<ProtocolDecision> {
+    override val descriptor = JsonElement.serializer().descriptor
+
+    fun toJson(decision: ProtocolDecision): JsonElement = when (decision) {
+        is ProtocolDecision.Allow -> JsonPrimitive("allow")
+        is ProtocolDecision.Block -> buildJsonObject {
+            putJsonObject("block") {
+                put("status", decision.status)
+                put("body", decision.body?.let { JsonPrimitive(it) } ?: JsonNull)
+                put(
+                    "headers",
+                    decision.headers?.let { h -> JsonObject(h.mapValues { JsonPrimitive(it.value) }) } ?: JsonNull
+                )
+            }
+        }
+        is ProtocolDecision.Redirect -> buildJsonObject {
+            putJsonObject("redirect") { put("url", decision.url); put("status", decision.status) }
+        }
+        is ProtocolDecision.Challenge -> buildJsonObject {
+            putJsonObject("challenge") {
+                put("challenge_type", decision.challengeType)
+                put("params", JsonObject(decision.params.mapValues { JsonPrimitive(it.value) }))
+            }
+        }
+    }
+
+    fun fromJson(element: JsonElement): ProtocolDecision {
+        if (element is JsonPrimitive) {
+            if (element.content == "allow") return ProtocolDecision.Allow
+            throw SerializationException("Unknown decision: $element")
+        }
+        val obj = element.jsonObject
+        obj["allow"]?.let { return ProtocolDecision.Allow }
+        obj["block"]?.jsonObject?.let { b ->
+            return ProtocolDecision.Block(
+                status = b.getValue("status").jsonPrimitive.int,
+                body = (b["body"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content,
+                headers = (b["headers"] as? JsonObject)?.mapValues { it.value.jsonPrimitive.content }
+            )
+        }
+        obj["redirect"]?.jsonObject?.let { r ->
+            return ProtocolDecision.Redirect(
+                url = r.getValue("url").jsonPrimitive.content,
+                status = r["status"]?.jsonPrimitive?.int ?: 302
+            )
+        }
+        obj["challenge"]?.jsonObject?.let { c ->
+            return ProtocolDecision.Challenge(
+                challengeType = c.getValue("challenge_type").jsonPrimitive.content,
+                params = (c["params"] as? JsonObject)?.mapValues { it.value.jsonPrimitive.content } ?: emptyMap()
+            )
+        }
+        throw SerializationException("Unknown decision: $element")
+    }
+
+    override fun serialize(encoder: Encoder, value: ProtocolDecision) =
+        (encoder as JsonEncoder).encodeJsonElement(toJson(value))
+
+    override fun deserialize(decoder: Decoder): ProtocolDecision =
+        fromJson((decoder as JsonDecoder).decodeJsonElement())
+}
+
 /**
  * JSON serializer for the protocol.
  */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 val protocolJson = Json {
     ignoreUnknownKeys = true
     encodeDefaults = true
